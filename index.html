@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR Space Target Shooter</title>
+    <!-- A-Frame Library -->
+    <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
+    <!-- AR.js for A-Frame -->
+    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+    <!-- Canvas Effects Library for Background Particles -->
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+        }
+
+        /* Canvas พื้นหลังเคลื่อนไหวหมุนตามทิศทางโทรศัพท์ */
+        #bg-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+            pointer-events: none;
+            opacity: 0.6;
+        }
+
+        /* UI หน้าจอเกม */
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            box-sizing: border-box;
+            padding: 20px;
+        }
+
+        .hud-header {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 500px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 15px;
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            color: #fff;
+            font-size: 20px;
+            font-weight: bold;
+            box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
+        }
+
+        /* เป้าเล็งกลางหน้าจอ */
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 40px;
+            height: 40px;
+            border: 2px solid rgba(0, 255, 255, 0.8);
+            border-radius: 50%;
+            pointer-events: none;
+            box-shadow: 0 0 10px rgba(0, 255, 255, 0.8);
+        }
+
+        #crosshair::before {
+            content: '';
+            position: absolute;
+            top: 18px;
+            left: 18px;
+            width: 4px;
+            height: 4px;
+            background: #ff0055;
+            border-radius: 50%;
+        }
+
+        /* ปุ่มเริ่มเกม */
+        #start-btn {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 20;
+            padding: 15px 40px;
+            font-size: 22px;
+            font-weight: bold;
+            color: #fff;
+            background: linear-gradient(45deg, #ff0055, #7a00ff);
+            border: none;
+            border-radius: 30px;
+            box-shadow: 0 0 15px rgba(255, 0, 85, 0.6);
+            cursor: pointer;
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Dynamic Particle Background -->
+    <canvas id="bg-canvas"></canvas>
+
+    <!-- AR Scene Container -->
+    <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" vr-mode-ui="enabled: false">
+        
+        <a-assets>
+            <!-- เสียงเอฟเฟกต์รูปแบบ Audio Buffer จาก JS -->
+        </a-assets>
+
+        <!-- Camera & Raycaster targeting -->
+        <a-entity id="camera" camera look-controls raycaster="objects: .target;" cursor="fuse: false;">
+            <!-- Laser Effect Origin -->
+            <a-entity id="laser-beam" position="0.2 -0.2 -0.5" geometry="primitive: cylinder; radius: 0.005; length: 1" material="color: #00ffff; shader: flat; visible: false"></a-entity>
+        </a-entity>
+
+        <!-- Container สำหรับเป้าหมายที่จะสุ่มเกิด -->
+        <a-entity id="targets-container"></a-entity>
+
+    </a-scene>
+
+    <!-- UI Overlay -->
+    <div id="ui-container">
+        <div class="hud-header">
+            <div>Score: <span id="score-text">0</span></div>
+            <div>Time: <span id="time-text">30</span>s</div>
+        </div>
+        <div id="crosshair"></div>
+        <button id="start-btn">เริ่มเกม (START)</button>
+    </div>
+
+    <script>
+        // --- 1. Dynamic Background Effect (หมุนตามทิศทางโทรศัพท์) ---
+        const bgCanvas = document.getElementById('bg-canvas');
+        const ctx = bgCanvas.getContext('2d');
+        
+        let width = bgCanvas.width = window.innerWidth;
+        let height = bgCanvas.height = window.innerHeight;
+
+        window.addEventListener('resize', () => {
+            width = bgCanvas.width = window.innerWidth;
+            height = bgCanvas.height = window.innerHeight;
+        });
+
+        // สร้างอนุภาคพื้นหลัง (Particles)
+        const particles = [];
+        const numParticles = 60;
+        for (let i = 0; i < numParticles; i++) {
+            particles.push({
+                x: Math.random() * width,
+                y: Math.random() * height,
+                radius: Math.random() * 3 + 1,
+                color: `hsl(${Math.random() * 360}, 100%, 70%)`,
+                vx: (Math.random() - 0.5) * 2,
+                vy: (Math.random() - 0.5) * 2
+            });
+        }
+
+        let alpha = 0, beta = 0, gamma = 0;
+        
+        // ตรวจจับการหมุนของโทรศัพท์ (Device Orientation)
+        if (window.DeviceOrientationEvent) {
+            window.addEventListener('deviceorientation', (event) => {
+                gamma = event.gamma || 0; // เอียงซ้าย-ขวา (-90 ถึง 90)
+                beta = event.beta || 0;   // เอียงหน้า-หลัง (-180 ถึง 180)
+            });
+        }
+
+        function drawBackground() {
+            ctx.clearRect(0, 0, width, height);
+
+            // คำนวณ offset จากการหมุนเครื่อง
+            const offsetX = (gamma / 90) * 50;
+            const offsetY = (beta / 180) * 50;
+
+            particles.forEach((p) => {
+                p.x += p.vx + offsetX * 0.05;
+                p.y += p.vy + offsetY * 0.05;
+
+                // จัดการอนุภาคหลุดขอบ
+                if (p.x < 0) p.x = width;
+                if (p.x > width) p.x = 0;
+                if (p.y < 0) p.y = height;
+                if (p.y > height) p.y = 0;
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fillStyle = p.color;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = p.color;
+                ctx.fill();
+            });
+
+            requestAnimationFrame(drawBackground);
+        }
+        drawBackground();
+
+        // --- 2. Web Audio API (สร้างเสียงยิงและระเบิดโดยไม่ต้องดึงไฟล์นอก) ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playShootSound() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.15);
+            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.15);
+        }
+
+        function playHitSound() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.2);
+            gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.2);
+        }
+
+        // --- 3. ระบบลอจิกเกม AR ---
+        let score = 0;
+        let timeLeft = 30;
+        let gameInterval = null;
+        let isPlaying = false;
+
+        const scoreEl = document.getElementById('score-text');
+        const timeEl = document.getElementById('time-text');
+        const startBtn = document.getElementById('start-btn');
+        const container = document.getElementById('targets-container');
+        const camera = document.getElementById('camera');
+
+        // รายการรูปทรงไอคอนแบบ 3D
+        const targetGeometries = ['box', 'sphere', 'octahedron', 'torusKnot'];
+        const colors = ['#ff0055', '#00ffff', '#ffcc00', '#00ff66', '#aa00ff'];
+
+        function createTarget() {
+            if (!isPlaying) return;
+
+            const target = document.createElement('a-entity');
+            const geom = targetGeometries[Math.floor(Math.random() * targetGeometries.length)];
+            const color = colors[Math.floor(Math.random() * colors.length)];
+
+            // สุ่มตำแหน่งรอบตัวผู้เล่น (รัศมี 3 - 6 เมตร)
+            const alphaAngle = Math.random() * Math.PI * 2;
+            const betaAngle = (Math.random() - 0.5) * Math.PI / 2;
+            const distance = 3 + Math.random() * 3;
+
+            const x = distance * Math.cos(betaAngle) * Math.sin(alphaAngle);
+            const y = distance * Math.sin(betaAngle);
+            const z = -distance * Math.cos(betaAngle) * Math.cos(alphaAngle);
+
+            target.setAttribute('geometry', `primitive: ${geom}; radius: 0.35; size: 0.5; tube: 0.08`);
+            target.setAttribute('material', `color: ${color}; metalness: 0.6; roughness: 0.2; wireframe: false`);
+            target.setAttribute('position', `${x} ${y} ${z}`);
+            target.setAttribute('class', 'target');
+
+            // เพิ่มแอนิเมชันหมุนตัวเอง
+            target.setAttribute('animation', `
+                property: rotation;
+                to: ${Math.random()*360} ${Math.random()*360} ${Math.random()*360};
+                loop: true;
+                dur: 3000;
+                easing: linear
+            `);
+
+            container.appendChild(target);
+        }
+
+        // สร้างเอฟเฟกต์กระจายตอนยิงโดน
+        function createExplosion(pos) {
+            const count = 12;
+            for (let i = 0; i < count; i++) {
+                const p = document.createElement('a-sphere');
+                p.setAttribute('radius', '0.05');
+                p.setAttribute('material', 'color: #ffcc00; shader: flat');
+                p.setAttribute('position', `${pos.x} ${pos.y} ${pos.z}`);
+
+                const destX = pos.x + (Math.random() - 0.5) * 2;
+                const destY = pos.y + (Math.random() - 0.5) * 2;
+                const destZ = pos.z + (Math.random() - 0.5) * 2;
+
+                p.setAttribute('animation', `
+                    property: position;
+                    to: ${destX} ${destY} ${destZ};
+                    dur: 400;
+                    easing: easeOutQuad
+                `);
+
+                p.setAttribute('animation__opacity', `
+                    property: material.opacity;
+                    to: 0;
+                    dur: 400;
+                    easing: easeOutQuad
+                `);
+
+                container.appendChild(p);
+                setTimeout(() => p.remove(), 400);
+            }
+        }
+
+        // ระบบการยิงเมื่อแตะหน้าจอ
+        window.addEventListener('click', (e) => {
+            if (!isPlaying || e.target === startBtn) return;
+
+            playShootSound();
+
+            // แสดงเอฟเฟกต์ลำแสง
+            const raycaster = camera.components.raycaster;
+            const intersections = raycaster.intersectedEls;
+
+            if (intersections.length > 0) {
+                const target = intersections[0];
+                if (target.classList.contains('target')) {
+                    playHitSound();
+                    const targetPos = target.getAttribute('position');
+                    createExplosion(targetPos);
+                    
+                    target.remove();
+                    score += 10;
+                    scoreEl.textContent = score;
+
+                    // สุ่มสร้างเป้าใหม่ทดแทน
+                    setTimeout(createTarget, 300);
+                }
+            }
+        });
+
+        // เริ่มเกม
+        startBtn.addEventListener('click', () => {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            score = 0;
+            timeLeft = 30;
+            scoreEl.textContent = score;
+            timeEl.textContent = timeLeft;
+            isPlaying = true;
+
+            startBtn.style.display = 'none';
+            container.innerHTML = '';
+
+            // สร้างเป้าเริ่มต้น 6 ไอคอน
+            for (let i = 0; i < 6; i++) {
+                createTarget();
+            }
+
+            // นับเวลาถอยหลัง
+            gameInterval = setInterval(() => {
+                timeLeft--;
+                timeEl.textContent = timeLeft;
+
+                if (timeLeft <= 0) {
+                    clearInterval(gameInterval);
+                    isPlaying = false;
+                    alert(`จบเกม! คุณทำได้ ${score} คะแนน`);
+                    startBtn.textContent = 'เล่นอีกครั้ง (RESTART)';
+                    startBtn.style.display = 'block';
+                }
+            }, 1000);
+        });
+    </script>
+</body>
+</html>
